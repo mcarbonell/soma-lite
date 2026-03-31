@@ -4,6 +4,16 @@
 
 SOMA Lite is a minimal, zero-dependency implementation of the Sovereign Operating Memory Architecture. It provides persistent memory, terminal state, and tool execution for any LLM via JSON tool calls.
 
+## 📚 Academic Paper
+
+This is the reference implementation for **SOMA (Sovereign Operative Memory Architecture)**:
+
+- **Paper:** [DOI: 10.5281/zenodo.19354872](https://doi.org/10.5281/zenodo.19354872)
+- **Full Documentation:** [github.com/mcarbonell/soma](https://github.com/mcarbonell/soma)
+- **npm Package:** [soma-lite](https://www.npmjs.com/package/soma-lite)
+
+If you use soma-lite in research, please cite the paper.
+
 ## Quick Start
 
 ```bash
