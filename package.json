@@ -1,0 +1,29 @@
+{
+  "name": "soma-lite",
+  "version": "1.0.0",
+  "description": "SOMA Lite — Sovereign Operating Memory Architecture (Zero-Dependency)",
+  "main": "soma-lite.js",
+  "bin": {
+    "soma-lite": "./run-agent-lite.js"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "soma",
+    "autonomous",
+    "memory",
+    "llm"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node run-agent-lite.js",
+    "test": "node soma-lite.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/[user]/soma-lite"
+  }
+}
