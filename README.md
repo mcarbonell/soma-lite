@@ -63,3 +63,7 @@ SOMA Lite uses simple JSON tool calls:
 ## License
 
 MIT
+
+## Author
+
+Mario Raúl Carbonell Martínez

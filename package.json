@@ -2,6 +2,7 @@
   "name": "soma-lite",
   "version": "1.0.0",
   "description": "SOMA Lite — Sovereign Operating Memory Architecture (Zero-Dependency)",
+  "author": "Mario Raúl Carbonell Martínez <marioraulcarbonell@gmail.com>",
   "main": "soma-lite.js",
   "bin": {
     "soma-lite": "./run-agent-lite.js"
@@ -24,6 +25,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/[user]/soma-lite"
+    "url": "https://github.com/mcarbonell/soma-lite"
   }
 }
