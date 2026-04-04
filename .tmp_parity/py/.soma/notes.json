@@ -1,0 +1,11 @@
+{
+  "notes": [
+    {
+      "id": "n1",
+      "title": "Note",
+      "content": "Body",
+      "collapsed": false
+    }
+  ],
+  "next_id": 2
+}
