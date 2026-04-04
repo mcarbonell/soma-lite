@@ -21,7 +21,7 @@
   },
   "scripts": {
     "start": "node run-agent-lite.js",
-    "test": "node soma-lite.js"
+    "test": "python tests/parity.py"
   },
   "repository": {
     "type": "git",

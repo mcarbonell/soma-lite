@@ -1,8 +1,0 @@
-{"id": "msg_001", "tool": "execute_command", "args": {"command": "echo hello"}, "result": "hello\n", "timestamp": "2026-04-04T15:09:06.367637"}
-{"id": "msg_002", "tool": "execute_command", "args": {"command": "cd subdir"}, "result": "\ud83d\udcc1 Directorio cambiado: C:\\Users\\mrcm_\\Local\\proj\\soma-lite\\.tmp_parity\\py \u2192 C:\\Users\\mrcm_\\Local\\proj\\soma-lite\\.tmp_parity\\py\\subdir", "timestamp": "2026-04-04T15:09:06.412192"}
-{"id": "msg_003", "tool": "execute_command", "args": {"command": "export FOO=bar"}, "result": "\u2713 Variable de entorno establecida: FOO=bar", "timestamp": "2026-04-04T15:09:06.413588"}
-{"id": "msg_004", "tool": "write_file", "args": {"path": "alpha.txt", "content": "line1\nline2"}, "result": "success", "timestamp": "2026-04-04T15:09:06.415096"}
-{"id": "msg_005", "tool": "read_file", "args": {"path": "alpha.txt", "start": 1, "end": 2}, "result": "   1: line1\n   2: line2", "timestamp": "2026-04-04T15:09:06.429902"}
-{"id": "msg_006", "tool": "write_file", "args": {"path": "beta.txt", "content": "beta"}, "result": "success", "timestamp": "2026-04-04T15:09:06.432616"}
-{"id": "msg_007", "tool": "finish_task", "args": {"status": "success", "summary": "done", "feedback": "ok"}, "result": "TASK_FINISHED [SUCCESS]: done", "timestamp": "2026-04-04T15:09:06.433265"}
-{"id": "msg_008", "tool": "add_note", "args": {"title": "Note", "content": "Body"}, "result": "Nota creada con ID: n1", "timestamp": "2026-04-04T15:09:06.434840"}

@@ -9,7 +9,6 @@ SOMA Lite is a minimal, zero-dependency implementation of the Sovereign Operatin
 This is the reference implementation for **SOMA (Sovereign Operative Memory Architecture)**:
 
 - **Paper:** [DOI: 10.5281/zenodo.19354872](https://doi.org/10.5281/zenodo.19354872)
-- **Full Documentation:** [github.com/mcarbonell/soma](https://github.com/mcarbonell/soma)
 - **npm Package:** [soma-lite](https://www.npmjs.com/package/soma-lite)
 
 If you use soma-lite in research, please cite the paper.
@@ -19,6 +18,10 @@ If you use soma-lite in research, please cite the paper.
 ```bash
 # Install
 npm install soma-lite
+
+# Create a .env file in the project root
+# Example:
+# GOOGLE_API_KEY=your_key_here
 
 # Run
 npx soma-lite --task "Create a hello.js that prints Hello World"
@@ -52,6 +55,19 @@ Options:
 - `--workspace`   : Working directory
 - `--debug`       : Show L1 memory content
 - `--rpm`         : Requests per minute limit
+
+## Environment Variables
+
+Create a `.env` file in the repository root and add the API keys you need:
+
+```bash
+GOOGLE_API_KEY=your_google_key
+OPENAI_API_KEY=your_openai_key
+ANTHROPIC_API_KEY=your_anthropic_key
+OPENROUTER_API_KEY=your_openrouter_key
+```
+
+Both `run-agent-lite.js` and `run_agent_lite.py` load `.env` automatically from the project root.
 
 ## LLM Communication Protocol
 

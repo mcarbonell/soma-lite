@@ -64,3 +64,11 @@ docs/
 # Archivos temporales
 *.tmp
 *.temp
+
+# Workspaces y pruebas locales de SOMA Lite
+.tmp_google_test/
+.tmp_parity/
+.tmp_debug_js/
+.tmp_debug_py/
+soma_lite_test_env/
+.soma/

@@ -514,8 +514,9 @@ ${this.formatActionLog()}
         this.actionLog.push(entry);
     }
 
-    logEpisodicMemory(prompt, rawResponse) {
-        const turnFolder = path.join(this.l2Path, `turn_${String(this.turnsSinceCheckpoint + 1).padStart(3, '0')}`);
+    logEpisodicMemory(prompt, rawResponse, turnNumber) {
+        const safeTurn = Number.isInteger(turnNumber) ? turnNumber + 1 : this.turnsSinceCheckpoint + 1;
+        const turnFolder = path.join(this.l2Path, `turn_${String(safeTurn).padStart(3, '0')}`);
         if (!fs.existsSync(turnFolder)) fs.mkdirSync(turnFolder, { recursive: true });
 
         fs.writeFileSync(path.join(turnFolder, 'l1_prompt.txt'), prompt, 'utf-8');

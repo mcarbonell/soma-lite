@@ -4,7 +4,6 @@ import subprocess
 import re
 from pathlib import Path
 from datetime import datetime
-import traceback
 import shutil
 
 
@@ -20,6 +19,7 @@ class SimulatedStatefulTerminal:
         self.command_history = []
         self.last_output = ""
         self.last_command = ""
+        self.background_processes = {}
         
     def get_prompt_info(self) -> dict:
         """Devuelve información para mostrar en el prompt del agente."""
@@ -57,10 +57,12 @@ class SimulatedStatefulTerminal:
             (r'^node\s*$', "node sin argumentos entra en modo interactivo"),
             (r'^bash\s*$', "bash sin argumentos entra en modo interactivo"),
             (r'^sh\s*$', "sh sin argumentos entra en modo interactivo"),
+            (r'\.(env|pem|id_rsa|credentials|json)\b', "acceso a archivos de configuraci\u00f3n o llaves bloqueado por seguridad"),
+            (r'\.soma', "la carpeta .soma es el kernel del sistema y est\u00e1 protegida contra acceso directo desde el terminal"),
         ]
-        
+
         for pattern, reason in dangerous_patterns:
-            if re.match(pattern, command.strip(), re.IGNORECASE):
+            if re.search(pattern, command.strip(), re.IGNORECASE):
                 return f"⚠️ COMANDO BLOQUEADO: {reason}. El comando no se ejecutó para evitar que el terminal se quede colgado."
         
         # Pre-procesar: expandir variables $VAR
@@ -117,9 +119,7 @@ class SimulatedStatefulTerminal:
                 env=env
             )
             
-            output = result.stdout
-            if result.stderr:
-                output += "\n" + result.stderr if output else result.stderr
+            output = result.stdout + result.stderr if result.returncode != 0 else result.stdout
             
             if not output.strip():
                 output = "✓ Comando ejecutado exitosamente (sin salida)"
@@ -141,6 +141,24 @@ class SimulatedStatefulTerminal:
             result = f"❌ Error ejecutando comando: {str(e)}"
             self.command_history.append({"cmd": command, "cwd": str(self.cwd), "result": result})
             return result
+
+    def read_background_output(self, pid: str) -> str:
+        info = self.background_processes.get(str(pid))
+        if not info:
+            return f"❌ Error: El proceso con PID {pid} no está en ejecución o ya terminó."
+        return f"[Salida PID {pid} - {info['command']}]\n{''.join(info['output']) or '(Sin salida todavía)'}"
+
+    def stop_process(self, pid: str) -> str:
+        info = self.background_processes.get(str(pid))
+        if not info:
+            return f"❌ Error: No se encontró el proceso con PID {pid}"
+        proc = info["process"]
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        self.background_processes.pop(str(pid), None)
+        return f"✅ Proceso {pid} detenido."
     
     def _change_directory(self, target: str) -> str:
         """Cambia el directorio de trabajo."""
@@ -194,6 +212,11 @@ class SOMALite:
         self.turns_since_checkpoint = 0
         self.action_log = []
         self.msg_counter = 0
+        self.pins = {
+            "SYSTEM": "system_info",
+            "CWD": "pwd",
+            "FILES": "ls -F",
+        }
         # Inicializar terminal stateful
         self.terminal = SimulatedStatefulTerminal(str(self.workspace))
         self.init_soma()
@@ -274,8 +297,9 @@ Todas las herramientas aceptan un parámetro opcional `reason` para explicar tu 
         Para execute_command, guarda el principio y el final si es muy largo."""
         limits = {
             "execute_command": 1000,
-            "read_file": 2000,
+            "read_file": 3000,
             "write_file": 50,
+            "edit_line_range": 200,
             "update_notes": 100,
             "checkpoint": 100,
             "finish_task": 500
@@ -321,6 +345,14 @@ Todas las herramientas aceptan un parámetro opcional `reason` para explicar tu 
 
         # Obtener estado de la terminal stateful
         terminal_state = self.terminal.get_state_summary()
+
+        rendered_pins = []
+        for alias, command in self.pins.items():
+            if command == "system_info":
+                output = f"Time: {datetime.now().isoformat(timespec='seconds')} | OS: {os.name} | Python: {os.sys.version.split()[0]}"
+            else:
+                output = self.terminal.execute(command)
+            rendered_pins.append(f"[PIN: {alias}] ({command})\n{self._truncate_with_ellipsis(output, 40)}\n---")
         
         # Resumen de notas para el dashboard
         notes_data = self._read_notes()
@@ -340,6 +372,9 @@ Todas las herramientas aceptan un parámetro opcional `reason` para explicar tu 
 Pm: {pm:.1f}% | Turns: {self.turns_since_checkpoint}/20 | State: {state_icon}
 📝 Notas: {notes_dash}
 {terminal_state}
+
+[PINS]
+{chr(10).join(rendered_pins) if rendered_pins else '(No hay pins activos)'}
 </dashboard>
 
 <changelog>
@@ -381,7 +416,7 @@ Pm: {pm:.1f}% | Turns: {self.turns_since_checkpoint}/20 | State: {state_icon}
         """Ejecuta comando en terminal stateful. Mantiene cwd y variables."""
         return self.terminal.execute(command)
 
-    def read_file(self, path: str) -> str:
+    def read_file(self, path: str, start: int = 1, end: int = 100) -> str:
         """Lee archivo. Retorna contenido completo."""
         target_path = (self.workspace / path).resolve()
         if not str(target_path).startswith(str(self.workspace)):
@@ -389,7 +424,10 @@ Pm: {pm:.1f}% | Turns: {self.turns_since_checkpoint}/20 | State: {state_icon}
         if not target_path.exists():
             return f"Error: File {path} not found."
         try:
-            return target_path.read_text(encoding="utf-8")
+            content = target_path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            slice_lines = lines[start - 1:end]
+            return "\n".join(f"{str(start + i).rjust(4)}: {line}" for i, line in enumerate(slice_lines))
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
@@ -404,6 +442,32 @@ Pm: {pm:.1f}% | Turns: {self.turns_since_checkpoint}/20 | State: {state_icon}
             return "success"
         except Exception as e:
             return f"Error writing file: {str(e)}"
+
+    def edit_line_range(self, path: str, start: int, end: int, text: str) -> str:
+        target_path = (self.workspace / path).resolve()
+        if not str(target_path).startswith(str(self.workspace)):
+            return "Error: Path outside workspace."
+        if not target_path.exists():
+            return f"Error: File {path} not found."
+        try:
+            content = target_path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            replacement_lines = text.splitlines() or [text]
+            lines[start - 1:end] = replacement_lines
+            target_path.write_text("\n".join(lines), encoding="utf-8")
+            return f"success. replaced lines {start}-{end}."
+        except Exception as e:
+            return f"Error editing file: {str(e)}"
+
+    def pin(self, command: str, alias: str) -> str:
+        self.pins[alias] = command
+        return f"✓ Command pinned as [{alias}]"
+
+    def unpin(self, alias: str) -> str:
+        if alias in self.pins:
+            del self.pins[alias]
+            return f"✓ [{alias}] unpinned."
+        return f"Error: Pin [{alias}] not found."
 
     def _read_notes(self) -> dict:
         notes_path = self.soma / "notes.json"
@@ -518,10 +582,14 @@ Pm: {pm:.1f}% | Turns: {self.turns_since_checkpoint}/20 | State: {state_icon}
         result = ""
         if tool_name == "execute_command":
             result = self.execute_command(args.get("command", ""))
+        elif tool_name == "stop_process":
+            result = self.terminal.stop_process(str(args.get("pid", "")))
         elif tool_name == "read_file":
-            result = self.read_file(args.get("path", ""))
+            result = self.read_file(args.get("path", ""), args.get("start", 1), args.get("end", 100))
         elif tool_name == "write_file":
             result = self.write_file(args.get("path", ""), args.get("content", ""))
+        elif tool_name == "edit_line_range":
+            result = self.edit_line_range(args.get("path", ""), args.get("start", 1), args.get("end", 1), args.get("text", ""))
         elif tool_name == "add_note":
             result = self.add_note(args.get("title", ""), args.get("content", ""))
         elif tool_name == "update_note":
@@ -534,6 +602,10 @@ Pm: {pm:.1f}% | Turns: {self.turns_since_checkpoint}/20 | State: {state_icon}
             result = self.checkpoint(args.get("description", ""))
         elif tool_name == "finish_task":
             result = self.finish_task(args.get("status", "success"), args.get("summary", ""), args.get("feedback", ""))
+        elif tool_name == "pin":
+            result = self.pin(args.get("command", ""), args.get("alias", "sensor"))
+        elif tool_name == "unpin":
+            result = self.unpin(args.get("alias", ""))
         else:
             result = f"Error: Tool {tool_name} not found."
             
@@ -548,6 +620,15 @@ Pm: {pm:.1f}% | Turns: {self.turns_since_checkpoint}/20 | State: {state_icon}
             warning = "🟡 Advertencia de Memoria. Considera llamar a checkpoint() pronto."
             
         return result, warning
+
+    def _truncate_with_ellipsis(self, text: str, max_lines: int) -> str:
+        lines = str(text).splitlines()
+        if len(lines) <= max_lines:
+            return text
+        half = max_lines // 2
+        head = "\n".join(lines[:half])
+        tail = "\n".join(lines[-half:])
+        return f"{head}\n... [{len(lines) - max_lines} líneas ocultas] ...\n{tail}"
 
 if __name__ == "__main__":
     print("Iniciando pruebas de SOMALite...")

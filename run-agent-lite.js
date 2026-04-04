@@ -89,6 +89,64 @@ function extractJson(text) {
     }
 }
 
+function extractGemmaToolCalls(text) {
+    const calls = [];
+    const regex = /<\|tool_call\>call:([a-zA-Z_][\w-]*)\{([\s\S]*?)\}<tool_call\|>/g;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+        const tool = match[1];
+        const rawArgs = match[2].trim();
+        const args = {};
+
+        const argRegex = /(\w+):(?:<\|""\|>([\s\S]*?)<\|""\|>|<\|"|"\|>([\s\S]*?)<\|"|"\|>|([^,}]*))/g;
+        let argMatch;
+        while ((argMatch = argRegex.exec(rawArgs)) !== null) {
+            const key = argMatch[1];
+            const value = (argMatch[2] || argMatch[3] || argMatch[4] || "").trim();
+            if (value === "true") args[key] = true;
+            else if (value === "false") args[key] = false;
+            else if (value !== "" && !Number.isNaN(Number(value)) && /^-?\d+(\.\d+)?$/.test(value)) args[key] = Number(value);
+            else args[key] = value;
+        }
+
+        calls.push({ tool, args });
+    }
+
+    return calls.length ? calls : null;
+}
+
+function getToolStrategy(provider, model) {
+    const normalized = `${provider || ""}:${model || ""}`.toLowerCase();
+    const isGemma = normalized.includes("google:") && normalized.includes("gemma");
+
+    if (isGemma) {
+        return {
+            name: "gemma-tools",
+            systemPrompt: `You are SOMA Lite running on Gemma 4.
+
+Use the available tools directly. Do not write plans or explanations.
+Return exactly one tool call in the Gemma tool-call format:
+<|tool_call>call:tool_name{arg1:...}<tool_call|>
+
+If you need multiple steps, return one tool call at a time.`,
+            parseReply(text) {
+                return extractGemmaToolCalls(text) || extractJson(text);
+            }
+        };
+    }
+
+    return {
+        name: "json-tools",
+        systemPrompt: `You are SOMA Lite.
+Return exactly one valid JSON object or a JSON array of tool calls.
+Do not include prose, markdown, or explanations outside the JSON.`,
+        parseReply(text) {
+            return extractJson(text);
+        }
+    };
+}
+
 function estimateTokens(text) {
     return Math.floor(text.length / 4);
 }
@@ -132,7 +190,12 @@ async function callOpenRouter(apiKey, model, messages, maxTokens) {
 async function callGoogle(apiKey, model, messages, maxTokens) {
     // Convertir formato OpenAI a formato Gemini
     const contents = [];
+    let systemInstruction = "";
     for (const msg of messages) {
+        if (msg.role === 'system') {
+            systemInstruction = msg.content;
+            continue;
+        }
         contents.push({
             role: msg.role === 'user' ? 'user' : 'model',
             parts: [{ text: msg.content }]
@@ -145,6 +208,7 @@ async function callGoogle(apiKey, model, messages, maxTokens) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             contents: contents,
+            systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
             generationConfig: {
                 temperature: 0.0,
                 maxOutputTokens: maxTokens
@@ -368,7 +432,8 @@ async function runAgent() {
             fs.writeFileSync(taskFile, taskContent, 'utf-8');
         }
     }
-    const sysInstr = "You are SOMA Lite, an autonomous software engineer. Follow the protocol and rules defined in your <identity> context.";
+    const toolStrategy = getToolStrategy(args.provider, args.model);
+    const sysInstr = toolStrategy.systemPrompt;
 
     const availableContext = contextWindow - args.maxTokens - estimateTokens(sysInstr);
     console.log(`📏 Espacio disponible para L1: ${availableContext.toLocaleString()} tokens`);
@@ -419,7 +484,8 @@ ${prompt}
         console.log(`\n${'='.repeat(40)}`);
         console.log(`🔄 Turno ${i + 1}/${args.maxTurns} - Pensando (${args.provider})...`);
 
-        let agentReply = "";
+        let rawReply = "";
+        let parsedReply = "";
         let finalPrompt = prompt;
         try {
             const promptTokens = estimateTokens(prompt);
@@ -436,12 +502,13 @@ ${prompt}
             ];
 
             const response = await callInference(args.provider, apiKey, args.model, messages, args.maxTokens);
-            agentReply = response.choices[0].message.content;
+            rawReply = response.choices[0].message.content || "";
+            parsedReply = rawReply;
 
-            console.log(`🤖 Respuesta:\n${agentReply}`);
+            console.log(`🤖 Respuesta:\n${rawReply}`);
 
             // Guardar Memoria Episódica L2 (Prompt + Respuesta Cruda)
-            soma.logEpisodicMemory(finalPrompt, agentReply);
+            soma.logEpisodicMemory(finalPrompt, rawReply, i);
         } catch (err) {
             console.error(`❌ Error de API: ${err.message}`);
             if (args.debug) {
@@ -452,19 +519,35 @@ ${prompt}
 
         if (args.debug) {
             const rawFile = path.join(debugDir, `RAW_turn_${i}.txt`);
-            fs.writeFileSync(rawFile, `=== Turno ${i} - RESPUESTA RAW DEL MODELO ===\n\n${agentReply}\n\n=== FIN ===`, 'utf-8');
+            fs.writeFileSync(rawFile, `=== Turno ${i} - RESPUESTA RAW DEL MODELO ===\n\n${rawReply}\n\n=== FIN ===`, 'utf-8');
         }
 
-        const action = extractJson(agentReply);
+        let action = toolStrategy.parseReply(parsedReply);
         if (!action) {
-            console.log("❌ Error de parseo JSON. Reintentando...");
+            console.log("❌ Error de parseo JSON. Reintentando con instrucción reforzada...");
+            try {
+                const repairMessages = [
+                    { role: 'system', content: sysInstr },
+                    { role: 'user', content: `${finalPrompt}\n\nIMPORTANT: Your previous answer was invalid. Reply only in the required tool-call format. No prose.` }
+                ];
+                const repairResponse = await callInference(args.provider, apiKey, args.model, repairMessages, args.maxTokens);
+                const repairReply = repairResponse.choices[0].message.content;
+                console.log(`🤖 Respuesta de reparación:\n${repairReply}`);
+                action = toolStrategy.parseReply(repairReply);
+            } catch (repairErr) {
+                console.log(`❌ La reparación también falló: ${repairErr.message}`);
+            }
+
+            if (!action) {
+                console.log("❌ Error de parseo JSON. Reintentando...");
             if (args.debug) {
                 const errorFile = path.join(debugDir, `JSON_ERROR_turn_${i}.txt`);
-                fs.writeFileSync(errorFile, `=== Turno ${i} - JSON Parse Error ===\n\nRespuesta del agente:\n${agentReply}\n\n=== FIN ===`, 'utf-8');
+                fs.writeFileSync(errorFile, `=== Turno ${i} - JSON Parse Error ===\n\nRespuesta del agente:\n${rawReply}\n\n=== FIN ===`, 'utf-8');
                 console.log(`💾 Respuesta malformada guardada en: ${errorFile}`);
             }
-            soma.logToL2("JSON_ERROR", { raw_response: agentReply.substring(0, 200) }, "Error: Envía solo JSON válido.");
+            soma.logToL2("JSON_ERROR", { raw_response: rawReply.substring(0, 200) }, "Error: Envía solo JSON válido.");
             continue;
+            }
         }
 
         const actions = Array.isArray(action) ? action : [action];
