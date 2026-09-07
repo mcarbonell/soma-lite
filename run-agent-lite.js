@@ -187,6 +187,120 @@ async function callOpenRouter(apiKey, model, messages, maxTokens) {
     return await response.json();
 }
 
+function buildGoogleFunctionDeclarations() {
+    return [
+        {
+            name: 'execute_command',
+            description: 'Execute a shell command in the persistent terminal.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    command: { type: 'string', description: 'Command to execute.' },
+                    background: { type: 'boolean', description: 'Run in background if true.' }
+                },
+                required: ['command']
+            }
+        },
+        {
+            name: 'read_file',
+            description: 'Read a file from the workspace.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Relative file path.' },
+                    start: { type: 'integer', description: 'Starting line number.' },
+                    end: { type: 'integer', description: 'Ending line number.' }
+                },
+                required: ['path']
+            }
+        },
+        {
+            name: 'write_file',
+            description: 'Write content to a file inside the workspace.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Relative file path.' },
+                    content: { type: 'string', description: 'File content.' }
+                },
+                required: ['path', 'content']
+            }
+        },
+        {
+            name: 'checkpoint',
+            description: 'Consolidate progress and clear the action log.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    description: { type: 'string', description: 'Checkpoint summary.' }
+                },
+                required: ['description']
+            }
+        },
+        {
+            name: 'finish_task',
+            description: 'Mark the task as finished.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    status: { type: 'string', description: 'success or fail.' },
+                    summary: { type: 'string', description: 'Short summary.' },
+                    feedback: { type: 'string', description: 'Optional feedback.' }
+                },
+                required: ['status', 'summary']
+            }
+        },
+        {
+            name: 'add_note',
+            description: 'Add a structured note to persistent memory.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    title: { type: 'string', description: 'Note title.' },
+                    content: { type: 'string', description: 'Note content.' }
+                },
+                required: ['title', 'content']
+            }
+        },
+        {
+            name: 'update_note',
+            description: 'Update an existing note.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: 'Note ID.' },
+                    title: { type: 'string', description: 'Optional new title.' },
+                    content: { type: 'string', description: 'Optional new content.' }
+                },
+                required: ['id']
+            }
+        },
+        {
+            name: 'delete_note',
+            description: 'Delete an existing note.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: 'Note ID.' }
+                },
+                required: ['id']
+            }
+        },
+        {
+            name: 'collapse_note',
+            description: 'Collapse or expand a note.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: 'Note ID.' },
+                    collapsed: { type: 'boolean', description: 'Whether the note is collapsed.' }
+                },
+                required: ['id']
+            }
+        }
+    ];
+}
+
 async function callGoogle(apiKey, model, messages, maxTokens) {
     // Convertir formato OpenAI a formato Gemini
     const contents = [];
@@ -209,6 +323,14 @@ async function callGoogle(apiKey, model, messages, maxTokens) {
         body: JSON.stringify({
             contents: contents,
             systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
+            tools: [{
+                functionDeclarations: buildGoogleFunctionDeclarations()
+            }],
+            toolConfig: {
+                functionCallingConfig: {
+                    mode: 'ANY'
+                }
+            },
             generationConfig: {
                 temperature: 0.0,
                 maxOutputTokens: maxTokens
@@ -222,13 +344,23 @@ async function callGoogle(apiKey, model, messages, maxTokens) {
     }
 
     const data = await response.json();
+    const functionCalls = [];
+    for (const candidate of data.candidates || []) {
+        for (const part of candidate.content?.parts || []) {
+            if (part.functionCall) {
+                functionCalls.push(part.functionCall);
+            }
+        }
+    }
     // Convertir formato Gemini a formato OpenAI
     return {
+        raw: data,
         choices: [{
             message: {
-                content: data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+                content: data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || ''
             }
-        }]
+        }],
+        functionCalls
     };
 }
 
@@ -343,6 +475,21 @@ async function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function cleanWorkspace(workspacePath) {
+    const resolved = path.resolve(workspacePath);
+    if (fs.existsSync(resolved)) {
+        fs.rmSync(resolved, { recursive: true, force: true });
+    }
+    fs.mkdirSync(resolved, { recursive: true });
+}
+
+function writeDebugArtifact(debugDir, turnIndex, kind, payload) {
+    if (!debugDir) return;
+    const filePath = path.join(debugDir, `${kind}_turn_${turnIndex}.json`);
+    const content = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    fs.writeFileSync(filePath, content, 'utf-8');
+}
+
 async function runAgent() {
     loadEnvManually();
 
@@ -416,6 +563,7 @@ async function runAgent() {
     console.log(`📏 Context window: ${contextWindow.toLocaleString()} tokens`);
 
     const workspacePath = path.resolve(args.workspace);
+    cleanWorkspace(workspacePath);
     console.log(`🚀 Iniciando SOMA Lite Agent Loop en: ${workspacePath}`);
     console.log(`🤖 Proveedor: ${args.provider} | Modelo: ${args.model} | Turnos: ${args.maxTurns}`);
 
@@ -487,6 +635,7 @@ ${prompt}
         let rawReply = "";
         let parsedReply = "";
         let finalPrompt = prompt;
+        let googleConversation = null;
         try {
             const promptTokens = estimateTokens(prompt);
 
@@ -501,7 +650,20 @@ ${prompt}
                 { role: 'user', content: finalPrompt }
             ];
 
+            if (args.debug) {
+                writeDebugArtifact(debugDir, i, 'REQUEST', {
+                    provider: args.provider,
+                    model: args.model,
+                    max_tokens: args.maxTokens,
+                    temperature: 0.0,
+                    messages
+                });
+            }
+
             const response = await callInference(args.provider, apiKey, args.model, messages, args.maxTokens);
+            if (args.debug) {
+                writeDebugArtifact(debugDir, i, 'API_RESPONSE', response?.raw || response);
+            }
             rawReply = response.choices[0].message.content || "";
             parsedReply = rawReply;
 
@@ -509,6 +671,59 @@ ${prompt}
 
             // Guardar Memoria Episódica L2 (Prompt + Respuesta Cruda)
             soma.logEpisodicMemory(finalPrompt, rawReply, i);
+
+            if (args.provider === 'google' && response.functionCalls && response.functionCalls.length > 0) {
+                googleConversation = [
+                    { role: 'system', content: sysInstr },
+                    { role: 'user', content: finalPrompt }
+                ];
+
+                for (const fnCall of response.functionCalls) {
+                    const toolName = fnCall.name || fnCall.function?.name;
+                    const toolArgs = fnCall.args || fnCall.function?.arguments || {};
+                    if (!toolName) continue;
+
+                    console.log(`🛠️  Ejecutando: ${toolName}`);
+                    const { result, warning } = soma.invokeTool(toolName, toolArgs);
+                    console.log(`📄 Resultado (trunc): ${String(result).substring(0, 150)}...`);
+                    if (warning) {
+                        console.log(`⚠️ ${warning}`);
+                    }
+
+                    googleConversation.push({
+                        role: 'model',
+                        parts: [{ functionCall: { name: toolName, args: toolArgs } }]
+                    });
+                    googleConversation.push({
+                        role: 'user',
+                        parts: [{
+                            functionResponse: {
+                                name: toolName,
+                                response: { result: String(result) }
+                            }
+                        }]
+                    });
+                }
+
+                const followUp = await callInference(args.provider, apiKey, args.model, googleConversation.map(msg => {
+                    if (msg.role === 'system') return { role: 'system', content: msg.content };
+                    if (msg.role === 'user' && msg.content) return { role: 'user', content: msg.content };
+                    if (msg.role === 'model' && msg.parts?.[0]?.functionCall) {
+                        return { role: 'model', content: JSON.stringify({ functionCall: msg.parts[0].functionCall }) };
+                    }
+                    if (msg.role === 'user' && msg.parts?.[0]?.functionResponse) {
+                        return { role: 'user', content: JSON.stringify({ functionResponse: msg.parts[0].functionResponse }) };
+                    }
+                    return msg;
+                }), args.maxTokens);
+
+                rawReply = followUp.choices[0].message.content || "";
+                parsedReply = rawReply;
+                console.log(`🤖 Respuesta final:\n${rawReply}`);
+                if (args.debug) {
+                    writeDebugArtifact(debugDir, i, 'FINAL_RESPONSE', rawReply);
+                }
+            }
         } catch (err) {
             console.error(`❌ Error de API: ${err.message}`);
             if (args.debug) {
@@ -524,15 +739,38 @@ ${prompt}
 
         let action = toolStrategy.parseReply(parsedReply);
         if (!action) {
+            if (args.provider === 'google') {
+                console.log("❌ Google no devolvió una llamada de herramienta parseable.");
+                if (args.debug) {
+                    const errorFile = path.join(debugDir, `JSON_ERROR_turn_${i}.txt`);
+                    fs.writeFileSync(errorFile, `=== Turno ${i} - Google Function Call Parse Error ===\n\nRespuesta del agente:\n${rawReply}\n\n=== FIN ===`, 'utf-8');
+                    console.log(`💾 Respuesta malformada guardada en: ${errorFile}`);
+                }
+                soma.logToL2("JSON_ERROR", { raw_response: rawReply.substring(0, 200) }, "Error: Google no devolvió functionCall.");
+                continue;
+            }
+
             console.log("❌ Error de parseo JSON. Reintentando con instrucción reforzada...");
             try {
                 const repairMessages = [
                     { role: 'system', content: sysInstr },
                     { role: 'user', content: `${finalPrompt}\n\nIMPORTANT: Your previous answer was invalid. Reply only in the required tool-call format. No prose.` }
                 ];
+                if (args.debug) {
+                    writeDebugArtifact(debugDir, i, 'REPAIR_REQUEST', {
+                        provider: args.provider,
+                        model: args.model,
+                        max_tokens: args.maxTokens,
+                        temperature: 0.0,
+                        messages: repairMessages
+                    });
+                }
                 const repairResponse = await callInference(args.provider, apiKey, args.model, repairMessages, args.maxTokens);
                 const repairReply = repairResponse.choices[0].message.content;
                 console.log(`🤖 Respuesta de reparación:\n${repairReply}`);
+                if (args.debug) {
+                    writeDebugArtifact(debugDir, i, 'REPAIR_RESPONSE', repairReply);
+                }
                 action = toolStrategy.parseReply(repairReply);
             } catch (repairErr) {
                 console.log(`❌ La reparación también falló: ${repairErr.message}`);
@@ -540,13 +778,13 @@ ${prompt}
 
             if (!action) {
                 console.log("❌ Error de parseo JSON. Reintentando...");
-            if (args.debug) {
-                const errorFile = path.join(debugDir, `JSON_ERROR_turn_${i}.txt`);
-                fs.writeFileSync(errorFile, `=== Turno ${i} - JSON Parse Error ===\n\nRespuesta del agente:\n${rawReply}\n\n=== FIN ===`, 'utf-8');
-                console.log(`💾 Respuesta malformada guardada en: ${errorFile}`);
-            }
-            soma.logToL2("JSON_ERROR", { raw_response: rawReply.substring(0, 200) }, "Error: Envía solo JSON válido.");
-            continue;
+                if (args.debug) {
+                    const errorFile = path.join(debugDir, `JSON_ERROR_turn_${i}.txt`);
+                    fs.writeFileSync(errorFile, `=== Turno ${i} - JSON Parse Error ===\n\nRespuesta del agente:\n${rawReply}\n\n=== FIN ===`, 'utf-8');
+                    console.log(`💾 Respuesta malformada guardada en: ${errorFile}`);
+                }
+                soma.logToL2("JSON_ERROR", { raw_response: rawReply.substring(0, 200) }, "Error: Envía solo JSON válido.");
+                continue;
             }
         }
 
